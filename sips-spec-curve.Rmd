@@ -1,0 +1,406 @@
+---
+title: "Sips multiverse"
+subtitle: "1. Loop"
+author: "Constantin Yves Plessen"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+knit: (function(inputFile, encoding) {
+      rmarkdown::render(inputFile, 
+      encoding = encoding, 
+      output_dir = "html") })
+output:
+  html_document:
+    code_folding: show
+    highlight: pygment
+    theme: cerulean
+    toc: yes
+    toc_depth: 2
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse) # data cleaning
+library(metafor)   # calculate meta-analytical models
+library(puniform)  # calculate p-uniform*
+
+PET.PEESE <- function(data) {
+  mod <- list()
+  fit_PET <- lm(yi ~ sqrt(vi), 
+                weights = 1/vi, 
+                data = data)
+  
+  pet_p <- coef(summary(fit_PET))["(Intercept)", "Pr(>|t|)"] # pet p-value < .10 -> peese
+  
+  if(pet_p >= .1) {
+    mod$b <- coef(summary(fit_PET))["(Intercept)", "Estimate"] # pet estimate
+    mod$ci.lb <- confint(fit_PET)["(Intercept)", "2.5 %"] 
+    mod$ci.ub<- confint(fit_PET)["(Intercept)", "97.5 %"] 
+    mod$pval <- pet_p
+    mod$type <- "PET"
+    
+  }else{
+    
+    fit_PEESE <- lm(yi ~ vi, 
+                    weights = 1/vi, 
+                    data = data)
+    
+    mod$pval <- coef(summary(fit_PEESE))["(Intercept)", "Pr(>|t|)"] # pet p-value < .10 -> peese
+    mod$b  <- coef(summary(fit_PEESE))["(Intercept)", "Estimate"] # peese estimate
+    mod$ci.lb <- confint(fit_PEESE)["(Intercept)", "2.5 %"] 
+    mod$ci.ub <- confint(fit_PEESE)["(Intercept)", "97.5 %"] 
+    mod$type <- "PEESE"
+
+  }
+  return(mod)
+}
+```
+
+
+# Simulate Data
+
+```{r}
+set.seed(42)
+data_sim_1 <- tibble( # Normal small effect
+  es_id = 1:20, # unique effect size ids
+  study_name = c(paste("Study", 1:10), 
+                 paste("Study", sort(rep(11:15, 2))))) %>% # unique study id
+  rowwise() %>%
+  mutate(m1i = rnorm(1, mean = 10, sd = 0.2),
+         m2i = rnorm(1, mean = 9, sd = 0.2),
+         sd1i = rnorm(1, mean = 2, sd = 0),
+         sd_2 = rnorm(1, mean = 2, sd = 0),
+         n1i = sample(10:100, 1),
+         n2i = n1i,
+         n =n1i + n2i,
+         
+         # WHICH FACTORS
+         wf1 = sample(c("wf1_a", "wf1_b"), 1),
+         rob = sample(c("sc"), 1)) 
+
+data_sim_2 <- tibble( # Null effect: high quality studies
+  es_id = 21:30, # unique effect size ids
+  study_name = c(paste("Study", 16:25))) %>% # unique study id
+  rowwise() %>%
+  mutate(m1i = rnorm(1, mean = 10, sd = 0.1),
+         m2i = rnorm(1, mean = 10, sd = 0.1),
+         sd1i = rnorm(1, mean = 2, sd = 0),
+         sd_2 = rnorm(1, mean = 2, sd = 0),
+         n1i = sample(10:100, 1),
+         n2i = n1i,
+         n =n1i + n2i,
+         
+         # WHICH FACTORS
+         wf1 = sample(c("wf1_a", "wf1_b"), 1),
+         rob = sample(c("low"), 1)) 
+
+data_sim_3 <- tibble( # High risk of bias
+  es_id = 31:50, # unique effect size ids
+  study_name = c(paste("Study", 26:35),
+                 paste("Study", sort(rep(36:40, 2))))) %>% # unique study id
+  rowwise() %>%
+  mutate(m1i = rnorm(1, mean = 10, sd = 0.5),
+         m2i = rnorm(1, mean = 6, sd = 0.5),
+         sd1i = rnorm(1, mean = 2, sd = 0),
+         sd_2 = rnorm(1, mean = 2, sd = 0),
+         n1i = sample(10:100, 1),
+         n2i = n1i,
+         n =n1i + n2i,
+         
+         # WHICH FACTORS
+         wf1 = sample(c("wf1_a", "wf1_b"), 1),
+         rob = sample(c("high"), 1)) 
+
+data_sim <- bind_rows(data_sim_1, data_sim_2, data_sim_3) %>% 
+  escalc(measure = "SMD", 
+         data = ., # calculate  Hedges g = yi, variance of g = vi, and se
+         m1i = m1i,
+         sd1i = sd1i,
+         n1i = n1i,
+         m2i = m2i,
+         sd2i = sd_2,
+         n2i = n2i) %>% 
+  data.frame(.) %>% 
+    ungroup()    %>% 
+  select(study_name, es_id, wf1, rob, yi, vi)
+
+data_sim
+```
+
+```{r}
+data_sim %>% group_by(rob) %>% summarise(mean_g = mean(yi))
+```
+
+## Save Data
+
+```{r}
+write.csv2(file = "data/data_sim.csv", 
+           data_sim)
+```
+
+# Conduct multiverse Meta-analysis
+
+## Setup
+
+### Which factors
+
+#### Define outliers
+
+```{r}
+data_sim <- data_sim %>% 
+  mutate(outliers = ifelse(yi > 1.4, 
+                          "outlier", "not_outlier"))
+```
+
+#### Define rob algorithm
+
+```{r}
+data_sim <- data_sim %>% 
+  mutate(rob_include_best = ifelse(rob == "low", 1, 0),
+         rob_exclude_worst = ifelse(rob %in% c("low", "sc"), 1, 0))
+```
+
+### Which factors
+```{r}
+wf1   <- c(unique(data_sim$wf1), "all wf1")
+outliers <- c("not_outlier", "all effects")
+rob <- c("exclude_worst", "include_best", "all rob")
+```
+
+
+### How Factors
+```{r}
+dependency <- c("ignore", "aggregate", "modeled")
+
+ma_method     <- c("3-level", "rve",       # modeled
+                   "reml", "fe",           # aggregate | ignore
+                   "puniform", "pet-peese" # aggregate only
+                   )
+```
+
+### Construct all specifications
+```{r}
+specifications_grid <- expand.grid(
+  wf1 = wf1,
+  outliers = outliers,
+  rob = rob,
+  ma_method = ma_method,
+  dependency = dependency)
+```
+
+### Cut irrelevant paths
+```{r}
+specifications_grid <- specifications_grid %>% 
+  filter((dependency == "modeled" & # Only those modeled dependencies should be calculated
+            (ma_method == "3-level" | ma_method == "rve")) | 
+           
+           (dependency == "aggregate" & # Only those averaged dependencies should be calculated
+              (ma_method == "reml" | ma_method == "fe" | ma_method == "puniform"| ma_method == "pet-peese")) | 
+           
+           (dependency == "ignore" & # Only those ignored dependencies should be calculated
+              (ma_method == "reml" | ma_method == "fe"))) 
+```
+
+### Create empty specifications frame to save means, CI, p values and k
+```{r}
+specifications <- data.frame(specifications_grid, 
+                             mean = rep(NA, nrow(specifications_grid)), 
+                             lb = rep(NA, nrow(specifications_grid)), 
+                             ub = rep(NA, nrow(specifications_grid)), 
+                             p = rep(NA, nrow(specifications_grid)), 
+                             k = rep(NA, nrow(specifications_grid)))
+```
+
+### Run Loop
+
+
+
+```{r}
+for(i in 1:nrow(specifications)) {
+  
+  dat <- data_sim 
+  
+  #######################################################################
+  ######################## WHICH FACTORS ################################
+  ####################################################################### 
+  
+  # wf1 
+  if(specifications$wf1[i] == "wf1_a") {
+    dat <- dat[dat$wf1 == "wf1_a", ] 
+  } else {
+    if(specifications$wf1[i] == "wf1_b") {
+      dat <- dat[dat$wf1 == "wf1_b", ] 
+    }
+  }
+  
+      # outlier
+  if(specifications$outliers[i] == "not_outlier") {
+    dat <- dat[dat$outliers == "not_outlier", ] 
+  }
+  
+    # rob
+  if(specifications$rob[i] == "exclude_worst") {
+    dat <- dat[dat$rob_exclude_worst == 1, ] 
+  } else {
+    if(specifications$rob[i] == "include_best") {
+      dat <- dat[dat$rob_include_best == 1, ] 
+    }
+  }
+  
+  # only compute meta-analytic summary effects for specification subsets with at least 2 studies/samples.
+  if(nrow(dat) < 2) next
+  
+  # Save which study/sample IDs were selected by the "Which" factors for a given specification.
+  specifications$set[i] <- paste(rownames(dat), collapse = ",")
+  
+  #######################################################################
+  ######################## HOW FACTORS ##################################
+  ####################################################################### 
+  
+
+  ######################## AGGREGATE DEPENDENCY ################################
+
+  if(specifications$dependency[i] == "aggregate") {
+    
+    # Aggregate data
+    dat <- dat %>% 
+      escalc(yi=yi, vi=vi, data=.)
+    
+    dat <- as.data.frame(aggregate(dat, 
+                                   cluster = study_name,
+                                   rho = 0.5))
+    
+    
+    if(specifications$ma_method[i] == "fe") {
+      mod <- rma(yi = dat$yi, vi = dat$vi, method = "FE") 
+    } else {
+      if(specifications$ma_method[i] == "reml") {
+        mod <- rma(yi = dat$yi, vi = dat$vi, method = "REML", 
+                   control = list(stepadj=0.5, maxiter = 2000))  
+      } else {
+        if(specifications$ma_method[i] == "pet-peese" & nrow(dat) > 2) { # needs more than 2 effect sizes
+          mod <- PET.PEESE(dat)
+        } else {
+          if(specifications$ma_method[i] == "pet-peese" & nrow(dat) <= 2) { # needs more than 2 effect sizes
+           # mod <- list() 
+            mod$b[[1]]     <- NA
+            mod$ci.lb[[1]] <- NA
+            mod$ci.ub[[1]] <- NA
+            mod$pval[[1]]  <- NA
+          } else {
+            if(specifications$ma_method[i] == "puniform") {
+              mod <- puni_star(yi = dat$yi, vi = dat$vi, 
+                               side = "right")
+              mod$b <- mod$est
+              mod$pval <- mod$pval.0 
+            }
+          }
+        }
+      }
+    }
+    specifications$mean[i] <- mod$b[[1]]
+    specifications$lb[i] <- mod$ci.lb[[1]]
+    specifications$ub[i] <- mod$ci.ub[[1]]
+    specifications$p[i] <- mod$pval[[1]]
+    specifications$k[i] <- nrow(dat)
+
+  } else {
+    
+    ######################## IGNORING DEPENDENCY ##############################
+    if(specifications$dependency[i] == "ignore") {
+      
+      if(specifications$ma_method[i] == "fe") {
+        mod <- rma(yi = dat$yi, vi = dat$vi, method = "FE") 
+      } else {
+        if(specifications$ma_method[i] == "reml") {
+          mod <- rma(yi = dat$yi, vi = dat$vi, method = "REML", control = list(stepadj=0.5, maxiter = 2000))  
+        }
+      }
+      specifications$mean[i] <- mod$b[[1]]
+      specifications$lb[i] <- mod$ci.lb[[1]]
+      specifications$ub[i] <- mod$ci.ub[[1]]
+      specifications$p[i] <- mod$pval[[1]]
+      specifications$k[i] <- nrow(dat)
+   
+    }  else {
+      
+      #################### MODELING DEPENDENCY #################################  
+      if(specifications$dependency[i] == "modeled" & sum(duplicated(dat$study_name)) > 1) { 
+        # only if number of clusters is smaller than number of data points
+        
+        mod_modeled <- rma.mv(data = dat, 
+                              yi = yi, 
+                              V = vi, 
+                              method = "REML", 
+                              control=list(optimizer="optim", optmethod="Nelder-Mead"),
+                              random = list(~1 | es_id,
+                                            ~1 | study_name), 
+                              sparse=TRUE)
+        
+        if(specifications$ma_method[i] == "3-level") {
+          mod <- mod_modeled
+        } else {
+          if(specifications$ma_method[i] == "rve") {
+            mod <- robust(mod_modeled, 
+                          cluster=dat$study_name, clubSandwich=TRUE)
+          }
+        }
+      } else {
+        if(specifications$dependency[i] == "modeled" & sum(duplicated(dat$study_name)) <= 1) { 
+          
+          # IF number of clusters is smaller than number of data points, write NA
+          mod <- list() 
+          
+          if(specifications$ma_method[i] == "3-level") {
+            mod$b[[1]]     <- NA
+            mod$ci.lb[[1]] <- NA
+            mod$ci.ub[[1]] <- NA
+            mod$pval[[1]]  <- NA
+          } else {
+            if(specifications$ma_method[i] == "rve") {
+              mod$b[[1]]      <- NA
+              mod$ci.lb[[1]]  <- NA
+              mod$ci.ub[[1]]  <- NA
+              mod$pval[[1]]   <- NA
+            }
+          }
+        }
+      }
+      specifications$mean[i] <- mod$b[[1]] 
+      specifications$lb[i]   <- mod$ci.lb[[1]]
+      specifications$ub[i]   <- mod$ci.ub[[1]]
+      specifications$p[i]    <- mod$pval[[1]]
+      specifications$k[i]    <- nrow(dat)
+      ################################################     
+    }
+  }
+}
+```
+
+### Clean specifications
+```{r}
+# Only keep specifications with at least 2 studies/samples
+specifications_minimum_2_studies <- specifications[complete.cases(specifications),]
+
+# Only keep unique study/sample subsets resulting from "Which" factor combinations.
+specifications_full <- specifications_minimum_2_studies[!duplicated(specifications_minimum_2_studies[, c("mean", "set", "ma_method")]), ]
+
+# Indicator if all studies are included in the set
+specifications_full$full_set <- as.numeric(specifications_full$set == paste(1:nrow(data_sim), collapse =",", sep = ""))
+```
+
+
+
+```{r}
+write.csv2(file = "data/specifications_full.csv", 
+           specifications_full)
+```
+
+
+
+# playing around
+
+```{r}
+data_sim %>% pull(rob) %>% table()
+```
+

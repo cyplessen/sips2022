@@ -1,0 +1,494 @@
+---
+title: "SIPS Multiverse"
+subtitle: "2. Descriptive Specification Curve"
+author: "Constantin Yves Plessen"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+knit: (function(inputFile, encoding) {
+      rmarkdown::render(inputFile, 
+      encoding = encoding, 
+      output_dir = "html") })
+output:
+  html_document:
+    code_folding: show
+    highlight: pygment
+    theme: cerulean
+    toc: yes
+    toc_depth: 2
+    toc_float: yes
+---
+
+```{r setup, include=FALSE, out.width="100%"}
+knitr::opts_chunk$set(echo = TRUE)
+library(cowplot)
+library(ggrepel)
+library(tidyverse) # data cleaning
+```
+
+# Descriptive Specification Plot
+
+```{r}
+specifications_full <- read.csv2("data/specifications_full.csv")[, -1]
+data_sim <- read.csv2("data/data_sim.csv")[, -1]
+```
+
+
+### Preparation
+
+<br>
+
+### Which factors
+
+
+### Which factors
+```{r}
+wf1   <- c(unique(data_sim$wf1), "all wf1")
+outliers <- c("not_outlier", "all effects")
+rob <- c("exclude_worst", "include_best", "all rob")
+```
+
+
+### How Factors
+```{r}
+dependency <- c("ignore", "aggregate", "modeled")
+
+ma_method     <- c("3-level", "rve",       # modeled
+                   "reml", "fe",           # aggregate | ignore
+                   "puniform", "pet-peese" # aggregate only
+                   )
+
+number_which_how_factors <- 5
+```
+
+#### Rank each summary effect size by magnitude
+
+```{r }
+x_rank <- rank(specifications_full$mean, 
+               ties.method = "random")
+```
+
+
+#### Create all factors
+```{r }
+yvar <- rep(factor(rev(c(
+  wf1,
+  outliers,
+  rob,
+  dependency,
+  ma_method )), levels = rev(c(
+    wf1,
+    outliers,
+    rob,
+    dependency,
+    ma_method ))), 
+  times = nrow(specifications_full))
+
+unique(yvar)
+```
+
+
+#### Check lengths of yvar and specifications
+```{r }
+length(yvar)
+
+length(levels(yvar)) * nrow(specifications_full)
+```
+
+
+```{r }
+xvar <- rep(x_rank, 
+            each = length(levels(yvar)))
+spec <- NULL
+```
+
+<br>
+
+#### Determine which specifications are observed and which are not
+
+```{r }
+for(i in 1:nrow(specifications_full)) {
+  id <- as.numeric(levels(yvar) %in% 
+                     as.character(unlist(
+                       specifications_full[i, 1:number_which_how_factors])))  
+  spec <- c(spec, id)
+}
+```
+
+
+```{r }
+plotdata <- data.frame(xvar, 
+                       yvar, 
+                       spec)
+
+head(plotdata)
+```
+
+<br>
+
+#### Define y axis labels
+
+Need to be in order of:
+```{r}
+rev(unique(yvar))
+```
+
+```{r }
+ylabels <- rev(c(
+"Group: Non-adults",  
+"Group: Adults",
+"Group: All groups", 
+
+"Outlier: Removed",
+"Outlier: Not Removed", 
+
+"ROB: Worst Excluded",  
+"ROB: Only Best",
+"ROB: All rob", 
+
+"Dependency: Ignore", 
+"Dependency: Aggregate",
+"Dependency: Modeled",
+
+"Method: 3-Level",
+"Method: RVE",
+"Method: REML",
+"Method: FE",
+"Method: p-uniform",
+"Method: PET-PEESE"
+ ))
+
+ylabels
+```
+
+
+<br>
+
+```{r }
+plotdata$k <- rep(specifications_full$k, 
+                  each = length(levels(yvar)))  
+
+plotdata$fill <- as.factor(plotdata$k * plotdata$spec)
+```
+
+```{r}
+write.csv(plotdata, "data/plotdata.csv")
+```
+
+<br>
+
+## Colors based on relative size (*k*)
+```{r}
+fill_quantiles <- quantile(plotdata$k, c(.10, .20, .30, .40, .50, .60, .70, .80, .90))
+```
+
+```{r}
+plotdata_rel <- plotdata %>% 
+  mutate(fill_manual = case_when(
+    spec == 0 ~ 0,           # white
+    k  != 0               & k <= fill_quantiles[1] ~ 1,     # light yellow
+    k > fill_quantiles[1] & k <= fill_quantiles[2] ~ 2,
+    k > fill_quantiles[2] & k <= fill_quantiles[3] ~ 3,
+    k > fill_quantiles[3] & k <= fill_quantiles[4] ~ 4,
+    k > fill_quantiles[4] & k <= fill_quantiles[5] ~ 5,
+    k > fill_quantiles[5] & k <= fill_quantiles[6] ~ 6,
+    k > fill_quantiles[6] & k <= fill_quantiles[7] ~ 7,
+    k > fill_quantiles[7] & k <= fill_quantiles[8] ~ 8,
+    k > fill_quantiles[8] & k <= fill_quantiles[9]  ~ 9,
+    k > fill_quantiles[9]  ~ 10),   # dark red
+    fill_manual = as.factor(fill_manual))
+```
+
+
+```{r }
+cols <- RColorBrewer::brewer.pal(min(11, length(levels(plotdata_rel$fill_manual)) - 1), "Spectral")
+
+plot(NULL, xlim=c(0,length(cols)), ylim=c(0,1), 
+    xlab=cols, ylab="", xaxt="n", yaxt="n")
+
+rect(0:(length(cols)-1), 0, 1:length(cols), 1, col=cols)
+```
+
+##### Reversed color palette
+```{r}
+cols_rev <- cols[floor(seq(from = length(cols), to = 0, # change from to to reverse color coding!
+              length.out = length(levels(plotdata_rel$fill_manual))))] # change - 1 for direction change
+plot(NULL, xlim=c(0,length(cols_rev)), ylim=c(0,1), 
+    xlab="", ylab="", xaxt="n", yaxt="n")
+rect(0:(length(cols_rev)-1), 0, 1:length(cols_rev), 1, col=cols_rev)
+```
+
+<br>
+
+##### Specification tile plot 
+
+We will need the length of each factor when we plot the spec curve:
+
+```{r}
+length_of_each_factor <- c(
+  length(ma_method),
+  length(dependency) + length(ma_method),
+  length(rob) + length(dependency) + length(ma_method),
+  length(rob) + length(dependency) + length(ma_method) + length(outliers),
+  length(outliers) + length(wf1) + length(rob) + length(dependency) + length(ma_method))
+```
+
+### Empty factor pane
+
+```{r}
+factor_pane <- ggplot(data = plotdata_rel, 
+       aes(x = xvar, 
+           y = as.factor(yvar), 
+           fill = "white")) +
+  geom_raster(aes(alpha = 0)) + 
+  geom_hline(yintercept = length_of_each_factor + 0.5) +  # Change lines here here
+  scale_x_continuous(position = "bottom") +
+  scale_y_discrete(labels = ylabels) +
+  scale_fill_manual(
+    values = c("white", cols_rev)) +
+  labs(x = "Specification number", 
+       y = "Which/How factors") +
+  coord_cartesian(
+    expand = F, xlim = c(0.5, nrow(specifications_full) + 0.5)) +
+  theme_bw() + 
+  theme(legend.position = "none",
+        axis.text.y = element_text(colour = "black", size = 8),
+        axis.text.x = element_text(colour = "black"),
+                axis.ticks = element_line(colour = "black"),
+        plot.margin = margin(t = 5.5, 
+                             r = 5.5, 
+                             b = 5.5, 
+                             l = 5.5, 
+                             unit = "pt"))
+
+ggsave("figures/factor_pane.png", 
+       factor_pane, 
+       width = 10, 
+       height = 7.5,
+       dpi = "retina"
+       )
+```
+
+```{r}
+p1_rel <- ggplot(data = plotdata_rel, 
+       aes(x = xvar, 
+           y = as.factor(yvar), 
+           fill = fill_manual)) +
+  geom_raster() + 
+  geom_hline(yintercept = length_of_each_factor + 0.5) +  # Change lines here here
+  scale_x_continuous(position = "bottom") +
+  scale_y_discrete(labels = ylabels) +
+  scale_fill_manual(
+    values = c("white", cols_rev)) +
+  labs(x = "Specification number", 
+       y = "Which/How factors") +
+  coord_cartesian(
+    expand = F, xlim = c(0.5, nrow(specifications_full) + 0.5)) +
+  theme_bw() + 
+  theme(legend.position = "none",
+        axis.text.y = element_text(colour = "black", size = 8),
+        axis.text.x = element_text(colour = "black"),
+                axis.ticks = element_line(colour = "black"),
+        plot.margin = margin(t = 5.5, 
+                             r = 5.5, 
+                             b = 5.5, 
+                             l = 5.5, 
+                             unit = "pt"))
+
+p1_rel
+```
+
+```{r}
+fill_quantiles <- quantile(specifications_full$k, c(.10, .20, .30, .40, .50, .60, .70, .80, .90))
+
+specifications_full_rel <- specifications_full %>% 
+  mutate(fill_manual = case_when(
+    k  != 0               & k <= fill_quantiles[1] ~ 1,     # light yellow
+    k > fill_quantiles[1] & k <= fill_quantiles[2] ~ 2,
+    k > fill_quantiles[2] & k <= fill_quantiles[3] ~ 3,
+    k > fill_quantiles[3] & k <= fill_quantiles[4] ~ 4,
+    k > fill_quantiles[4] & k <= fill_quantiles[5] ~ 5,
+    k > fill_quantiles[5] & k <= fill_quantiles[6] ~ 6,
+    k > fill_quantiles[6] & k <= fill_quantiles[7] ~ 7,
+    k > fill_quantiles[7] & k <= fill_quantiles[8] ~ 8,
+    k > fill_quantiles[8] & k <= fill_quantiles[9]  ~ 9,
+    k > fill_quantiles[9]  ~ 10),   # dark red
+  fill_manual = as.factor(fill_manual))
+
+specifications_full_rel$xvar <- x_rank
+
+yrng <- range(c(0, specifications_full$lb, specifications_full$ub))
+
+#ylimit <- round(c(yrng[1] - diff(yrng)*0.1, yrng[2] + diff(yrng)*0.1), 1)
+ylimit <- c(-.5, 2)
+
+#y_breaks_forest <- round(seq(from = round(ylimit[1], 1), to = round(ylimit[2], 1), by = 0.5), 2)
+y_breaks_forest <- seq(-.25, 2, 0.25)
+
+y_labels_forest <- format(y_breaks_forest, nsmall = 2)
+y_breaks_forest <- c(ylimit[1], y_breaks_forest)
+y_labels_forest <- c(ylabels[which.max(nchar(ylabels))], y_labels_forest)
+```
+
+### Select specific Meta-Analyses to show in Plot
+```{r}
+set.seed(42)
+ma_for_forest_1 <- specifications_full_rel %>% 
+  filter(full_set == 1 & ma_method == "3-level") %>% mutate(label = "All Specifications: 3-LVL")
+
+ma_for_forest_2 <- specifications_full_rel %>% 
+  arrange(mean) %>% 
+  slice(which.min(abs(mean - 0))) %>% 
+  mutate(label = "Meta-Analysis A")
+
+ma_for_forest_3  <- specifications_full_rel %>% 
+  arrange(mean) %>% 
+  slice(which.min(abs(lb - 0))) %>% 
+  mutate(label = "Meta-Analysis B")
+
+ma_for_forest_4  <- specifications_full_rel %>% 
+  arrange(mean) %>% 
+  slice(which.min(abs(mean - 2))) %>% 
+  mutate(label = "Meta-Analysis C")
+
+ma_for_forest <- bind_rows(ma_for_forest_1,
+                           ma_for_forest_2,
+                           ma_for_forest_3,
+                           ma_for_forest_4)
+```
+
+## Empty which/how factor pane
+```{r}
+effect_pane <- specifications_full_rel %>% 
+ # filter(!ma_method == "rve") %>% 
+  ggplot(aes(x = xvar, 
+             y = mean))+ 
+  geom_errorbar(aes(ymin = lb, 
+                    ymax = ub,
+                    col = as.factor(fill_manual)), 
+                width = 0, 
+                size = 1,
+                alpha = 0) +
+  geom_line(col = "black", size = 0.25, alpha = 0) +
+  geom_hline(yintercept = 0, color = "blue", linetype = "solid", size = 2) +
+  #geom_hline(yintercept = .24, linetype = "dotted", size = 0.7, color = "red") +
+  scale_x_continuous(name = "") +
+  scale_y_continuous(name = expression(paste("Summary effect (", italic("g"),")")),
+                     breaks = y_breaks_forest, labels = y_labels_forest) + 
+  scale_color_manual(values = cols_rev) +
+  coord_cartesian(ylim = ylimit, xlim = c(0.5, nrow(specifications_full) + 0.5), expand = FALSE) +
+  ggtitle("Multiverse of All Reasonable Meta-Analyses") +
+  theme_bw() +
+  theme(legend.position = "none",
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.y = element_text(colour = c("white", rep("black", times = length(y_labels_forest) - 1))),
+        axis.ticks.y = element_line(colour = c("white", rep("black", times = length(y_breaks_forest) - 1))),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.major.y = element_line(),
+        panel.grid.minor.y = element_blank(),
+        plot.margin = margin(t = 5.5, r = 5.5, b = -15, l = 5.5, unit = "pt"))
+  #geom_label_repel(data = ma_for_forest, 
+  #                 aes(label = label),
+  #                 seed = 42,
+  #                 box.padding   = 0.35, 
+  #                 point.padding = 0.5,
+  #                 direction = "both",
+  #                 lineheight = 2,
+  #                 nudge_y = .5,
+  #                 segment.color = 'black',
+  #                 segment.angle = 90,
+  #                 segment.size = .5)
+
+ggsave("figures/effect_pane.png", 
+       effect_pane, 
+       width = 10, 
+       height = 7.5,
+       dpi = "retina"
+       )
+```
+
+```{r}
+p2_rel <- specifications_full_rel %>% 
+ # filter(!ma_method == "rve") %>% 
+  ggplot(aes(x = xvar, 
+             y = mean))+ 
+  geom_errorbar(aes(ymin = lb, 
+                    ymax = ub,
+                    col = as.factor(fill_manual)), 
+                width = 0, 
+                size = 1,
+                alpha = .9) +
+  geom_line(col = "black", size = 0.25) +
+  geom_hline(yintercept = 0, color = "blue", linetype = "solid", size = 2) +
+  #geom_hline(yintercept = .24, linetype = "dotted", size = 0.7, color = "red") +
+  scale_x_continuous(name = "") +
+  scale_y_continuous(name = expression(paste("Summary effect (", italic("g"),")")),
+                     breaks = y_breaks_forest, labels = y_labels_forest) + 
+  scale_color_manual(values = cols_rev) +
+  coord_cartesian(ylim = ylimit, xlim = c(0.5, nrow(specifications_full) + 0.5), expand = FALSE) +
+  ggtitle("Multiverse of All Reasonable Meta-Analyses") +
+  theme_bw() +
+  theme(legend.position = "none",
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.y = element_text(colour = c("white", rep("black", times = length(y_labels_forest) - 1))),
+        axis.ticks.y = element_line(colour = c("white", rep("black", times = length(y_breaks_forest) - 1))),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.major.y = element_line(),
+        panel.grid.minor.y = element_blank(),
+        plot.margin = margin(t = 5.5, r = 5.5, b = -15, l = 5.5, unit = "pt")) +
+  geom_label_repel(data = ma_for_forest, 
+                   aes(label = label),
+                   seed = 42,
+                   box.padding   = 0.35, 
+                   point.padding = 0.5,
+                   direction = "both",
+                   lineheight = 2,
+                   nudge_y = .5,
+                   segment.color = 'black',
+                   segment.angle = 90,
+                   segment.size = .5)
+
+p2_rel
+```
+
+#### Combine specfication tile plot, subset size indicator and forest plot 
+
+```{r}
+skelleton <- plot_grid(effect_pane,
+                   factor_pane,
+                   ncol = 1,
+                   align = "v",
+                   rel_heights = c(4,5))
+skelleton
+
+ggsave("figures/descriptive_skelleton.png", 
+       skelleton, 
+       width = 10, 
+       height = 7.5,
+       dpi = "retina"
+       )
+```
+
+```{r}
+p_rel <- plot_grid(p2_rel,
+                   p1_rel,
+                   ncol = 1,
+                   align = "v",
+                   rel_heights = c(4,5))
+p_rel
+```
+
+<br>
+
+## Save Plot
+
+```{r }
+ggsave("figures/descriptive_specification.png", 
+       p_rel, 
+       width = 10, 
+       height = 7.5,
+       dpi = "retina"
+       )
+```
